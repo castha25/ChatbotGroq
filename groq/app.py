@@ -1,13 +1,19 @@
 import streamlit as st
 import os
 import time
+import tempfile
 
 from dotenv import load_dotenv
 
 from langchain_groq import ChatGroq
 
-from langchain_community.document_loaders import WebBaseLoader
+from langchain_community.document_loaders import (
+    WebBaseLoader,
+    PyPDFLoader
+)
+
 from langchain_community.vectorstores import FAISS
+
 from langchain_huggingface import HuggingFaceEmbeddings
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -16,74 +22,142 @@ from langchain_core.prompts import ChatPromptTemplate
 
 load_dotenv()
 
-# -----------------------------
-# API Key
-# -----------------------------
+# --------------------------------
+# API KEY
+# --------------------------------
+
 groq_api_key = os.getenv("GROQ_API_KEY")
 
-# -----------------------------
-# Build Vector Store Once
-# -----------------------------
-if "vectors" not in st.session_state:
+# --------------------------------
+# EMBEDDINGS
+# --------------------------------
 
-    embeddings=HuggingFaceEmbeddings(
+embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
+
+# --------------------------------
+# TITLE
+# --------------------------------
+
+st.title("📚 RAG Chatbot (Groq)")
+
+# --------------------------------
+# SOURCE SELECTION
+# --------------------------------
+
+source = st.radio(
+    "Choose Knowledge Source",
+    ["LangSmith Docs", "Upload PDF"]
+)
+
+# --------------------------------
+# BUILD VECTOR STORE
+# --------------------------------
+
+if source == "Url":
+
+    if "docs_vectors" not in st.session_state:
+
+        urls = [
+            "https://docs.smith.langchain.com/",
+            "https://docs.langchain.com/langsmith/observability/",
+            "https://docs.langchain.com/langsmith/engine-overview/"
+        ]
+
+        loader = WebBaseLoader(urls)
+        docs = loader.load()
+
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=2000,
+            chunk_overlap=400
+        )
+
+        final_documents = splitter.split_documents(docs)
+
+        st.write(f"Documents Loaded: {len(docs)}")
+        st.write(f"Chunks Created: {len(final_documents)}")
+
+        vectors = FAISS.from_documents(
+            final_documents,
+            embeddings
+        )
+
+        st.session_state.docs_vectors = vectors
+
+    vectorstore = st.session_state.docs_vectors
+
+# --------------------------------
+# PDF RAG
+# --------------------------------
+
+else:
+
+    uploaded_file = st.file_uploader(
+        "Upload a PDF",
+        type="pdf"
     )
 
-    urls = [
-    "https://docs.smith.langchain.com/",
-    "https://docs.langchain.com/langsmith/observability/",
-    "https://docs.langchain.com/langsmith/engine-overview/"
-]
+    if uploaded_file:
 
-    loader = WebBaseLoader(urls)
-    docs = loader.load()
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".pdf"
+        ) as tmp_file:
 
-    
+            tmp_file.write(uploaded_file.read())
+            pdf_path = tmp_file.name
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000,
-        chunk_overlap=400
-    )
+        loader = PyPDFLoader(pdf_path)
 
-    final_documents = splitter.split_documents(docs)
-    print("Documents loaded:", len(docs))
-    print("Chunks created:", len(final_documents))
+        docs = loader.load()
 
-    vectors = FAISS.from_documents(
-        final_documents,
-        embeddings
-    )
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=2000,
+            chunk_overlap=400
+        )
 
-    st.session_state.embeddings = embeddings
-    st.session_state.vectors = vectors
+        final_documents = splitter.split_documents(docs)
 
-# -----------------------------
+        st.write(f"Pages Loaded: {len(docs)}")
+        st.write(f"Chunks Created: {len(final_documents)}")
+
+        vectorstore = FAISS.from_documents(
+            final_documents,
+            embeddings
+        )
+
+    else:
+        vectorstore = None
+
+# --------------------------------
 # LLM
-# -----------------------------
+# --------------------------------
+
 llm = ChatGroq(
     groq_api_key=groq_api_key,
     model_name="llama-3.3-70b-versatile"
 )
 
-# -----------------------------
-# Prompt
-# -----------------------------
+# --------------------------------
+# PROMPT
+# --------------------------------
+
 prompt = ChatPromptTemplate.from_template(
     """
 You are a helpful AI assistant.
 
-Answer the question only from the provided context.
+Answer ONLY from the provided context.
 
+Use all relevant information.
 
-Use all relevant information from the context.
-
-If the answer is found:
+If the answer is available:
 - Explain in detail.
-- Include important steps and concepts.
-- Do not unnecessarily shorten the answer.
+- Include steps when applicable.
+- Do not shorten unnecessarily.
 
-If the context does not contain enough information, clearly state that.
+If the answer is not present in the context,
+clearly say so.
 
 Context:
 {context}
@@ -93,23 +167,25 @@ Question:
 """
 )
 
-
-# -----------------------------
-# UI
-# -----------------------------
-st.title("RAG ChatbotGroq ")
+# --------------------------------
+# QUESTION INPUT
+# --------------------------------
 
 user_question = st.text_input(
-    "Input your prompt here"
+    "Ask your question"
 )
 
-if user_question:
+# --------------------------------
+# RAG PIPELINE
+# --------------------------------
+
+if user_question and vectorstore:
 
     start = time.process_time()
 
-    retriever = st.session_state.vectors.as_retriever(
-    search_kwargs={"k": 15}
-)
+    retriever = vectorstore.as_retriever(
+        search_kwargs={"k": 15}
+    )
 
     docs = retriever.invoke(user_question)
 
@@ -138,7 +214,7 @@ if user_question:
 
         for i, doc in enumerate(docs, start=1):
 
-            st.markdown(f"### Document Chunk {i}")
+            st.markdown(f"### Chunk {i}")
 
             st.write(doc.page_content)
 
