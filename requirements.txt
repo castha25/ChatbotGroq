@@ -17,3 +17,9 @@ beautifulsoup4
 langchain-groq
 arxiv
 langchainhub
+streamlit
+sentence-transformers
+transformers
+python-dotenv
+beautifulsoup4
+pypdf
